@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Suivi des demandes</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--tx:#1f2430;--mut:#6b7280;--bd:#e3e6eb;--todo:#e8590c;--doing:#1971c2;--done:#2f9e44;color-scheme:light dark}
+@media(prefers-color-scheme:dark){:root{--bg:#1b1e24;--card:#262a32;--tx:#e8eaee;--mut:#9aa1ad;--bd:#383d47}}
+*{box-sizing:border-box}
+body{margin:0;padding:12px;font:14px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--tx)}
+#msg{padding:24px;text-align:center;color:var(--mut)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:10px}
+.kpi{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px 12px;border-left:4px solid var(--c,var(--bd))}
+.kpi b{display:block;font-size:22px}.kpi span{color:var(--mut);font-size:12px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.bar input,.bar select{padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--tx);font:inherit}
+.bar input{flex:1;min-width:140px}
+.board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;align-items:start}
+@media(max-width:700px){.board{grid-template-columns:1fr}}
+.col{background:color-mix(in srgb,var(--c) 7%,var(--bg));border:1px solid var(--bd);border-top:3px solid var(--c);border-radius:8px;padding:8px;min-height:120px}
+.col.over{outline:2px dashed var(--c)}
+.col h2{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;display:flex;justify-content:space-between}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px 10px;margin-bottom:8px;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.card.sel{outline:2px solid var(--doing)}
+.card.late{border-left:4px solid var(--todo)}
+.card h3{margin:0 0 2px;font-size:14px}
+.meta{color:var(--mut);font-size:12px}
+.txt{margin:4px 0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:10px;background:color-mix(in srgb,var(--doing) 15%,transparent);margin:2px 4px 0 0}
+.tag.late{background:color-mix(in srgb,var(--todo) 20%,transparent);color:var(--todo)}
+</style>
+</head>
+<body>
+<div id="msg">Associez les colonnes dans le panneau de droite (Collectivité, Statut sont obligatoires).</div>
+<div id="app" hidden>
+  <div class="kpis" id="kpis"></div>
+  <div class="bar">
+    <input id="q" type="search" placeholder="Rechercher (collectivité, demandeur, contenu…)">
+    <select id="who"></select><select id="th"></select>
+  </div>
+  <div class="board" id="board"></div>
+</div>
+<script>
+const COLS=[{k:'todo',t:'À faire',v:'A faire'},{k:'doing',t:'En cours',v:'En cours'},{k:'done',t:'Terminé',v:'Terminé'}];
+const COL_VAR={todo:'--todo',doing:'--doing',done:'--done'};
+const LATE_DAYS=7;
+let rows=[],selId=null;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const txt=v=>v&&typeof v==='object'&&!Array.isArray(v)?(v.Collectivites??v.id):(Array.isArray(v)?v.filter(x=>x!=='L').join(', '):v);
+const keyOf=s=>{s=String(s||'').toLowerCase();return s.startsWith('term')?'done':s.startsWith('en cours')?'doing':'todo'};
+
+grist.ready({
+  requiredAccess:'full',
+  columns:[
+    {name:'collectivite',title:'Collectivité'},
+    {name:'statut',title:'Statut'},
+    {name:'date',title:'Date de réception',optional:true},
+    {name:'demandeur',title:'Demandeur',optional:true},
+    {name:'contenu',title:'Contenu de la demande',optional:true},
+    {name:'traite_par',title:'Traitée par',optional:true},
+    {name:'thematique',title:'Thématique',optional:true},
+    {name:'modalite',title:'Modalité de réception',optional:true}
+  ]
+});
+
+grist.onRecords(recs=>{
+  const m=grist.mapColumnNames(recs);
+  if(!m)return;
+  $('msg').hidden=true;$('app').hidden=false;
+  rows=m.map(r=>({
+    id:r.id,col:keyOf(r.statut),
+    coll:txt(r.collectivite),date:typeof r.date==='number'?r.date*1000:null,
+    dem:txt(r.demandeur),contenu:txt(r.contenu),par:txt(r.traite_par),
+    th:txt(r.thematique),mod:txt(r.modalite)
+  }));
+  fillSelect('who','Tous les agents','par');fillSelect('th','Toutes les thématiques','th');
+  render();
+},{expandRefs:true});
+
+grist.onRecord(r=>{selId=r?r.id:null;document.querySelectorAll('.card').forEach(c=>c.classList.toggle('sel',+c.dataset.id===selId))});
+
+function fillSelect(id,label,field){
+  const el=$(id),cur=el.value;
+  const vals=[...new Set(rows.map(r=>r[field]).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
+  el.innerHTML=`<option value="">${label}</option>`+vals.map(v=>`<option>${esc(v)}</option>`).join('');
+  el.value=vals.includes(cur)?cur:'';
+}
+const isLate=r=>r.col==='todo'&&r.date&&(Date.now()-r.date)/864e5>LATE_DAYS;
+
+function render(){
+  const q=$('q').value.toLowerCase(),who=$('who').value,th=$('th').value;
+  const list=rows.filter(r=>(!who||r.par===who)&&(!th||r.th===th)&&(!q||[r.coll,r.dem,r.contenu].join(' ').toLowerCase().includes(q)));
+  const n=k=>rows.filter(r=>r.col===k).length;
+  $('kpis').innerHTML=[
+    ['Total',rows.length,''],['À faire',n('todo'),'--todo'],['En cours',n('doing'),'--doing'],
+    ['Terminé',n('done'),'--done'],[`En retard (> ${LATE_DAYS} j)`,rows.filter(isLate).length,'--todo']
+  ].map(([t,v,c])=>`<div class="kpi" style="--c:var(${c||'--bd'})"><b>${v}</b><span>${t}</span></div>`).join('');
+  $('board').innerHTML=COLS.map(c=>{
+    const items=list.filter(r=>r.col===c.k).sort((a,b)=>(a.date||0)-(b.date||0));
+    return `<section class="col" data-k="${c.k}" style="--c:var(${COL_VAR[c.k]})">
+      <h2><span>${c.t}</span><span>${items.length}</span></h2>
+      ${items.map(r=>`<article class="card${isLate(r)?' late':''}${r.id===selId?' sel':''}" draggable="true" data-id="${r.id}">
+        <h3>${esc(r.coll)||'—'}</h3>
+        <div class="meta">${r.date?new Date(r.date).toLocaleDateString('fr-FR'):''}${r.dem?' · '+esc(r.dem):''}</div>
+        ${r.contenu?`<div class="txt">${esc(r.contenu)}</div>`:''}
+        ${r.th?`<span class="tag">${esc(r.th)}</span>`:''}${r.mod?`<span class="tag">${esc(r.mod)}</span>`:''}
+        ${isLate(r)?'<span class="tag late">En retard</span>':''}
+        ${r.par?`<div class="meta">→ ${esc(r.par)}</div>`:''}
+      </article>`).join('')}
+    </section>`}).join('');
+}
+
+['q','who','th'].forEach(id=>$(id).addEventListener('input',render));
+
+const board=$('board');
+board.addEventListener('click',e=>{
+  const c=e.target.closest('.card');if(c)grist.setCursorPos({rowId:+c.dataset.id});
+});
+board.addEventListener('dragstart',e=>{
+  const c=e.target.closest('.card');if(c)e.dataTransfer.setData('text/plain',c.dataset.id);
+});
+board.addEventListener('dragover',e=>{
+  const col=e.target.closest('.col');if(col){e.preventDefault();col.classList.add('over')}
+});
+board.addEventListener('dragleave',e=>{const col=e.target.closest('.col');if(col)col.classList.remove('over')});
+board.addEventListener('drop',async e=>{
+  e.preventDefault();
+  const col=e.target.closest('.col');if(!col)return;
+  col.classList.remove('over');
+  const id=+e.dataTransfer.getData('text/plain');
+  const target=COLS.find(c=>c.k===col.dataset.k);
+  const row=rows.find(r=>r.id===id);
+  if(!row||row.col===target.k)return;
+  row.col=target.k;render(); // retour visuel immédiat
+  try{
+    await grist.selectedTable.update({id,fields:grist.mapColumnNamesBack({statut:target.v})});
+  }catch(err){console.error(err)}
+});
+</script>
+</body>
+</html>
