@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Kanban Demandes RGPD</title>
+
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+
+<style>
+:root{
+  --todo:#f39c12;
+  --doing:#3498db;
+  --done:#27ae60;
+  --late:#e74c3c;
+  --bg:#f5f7fa;
+}
+
+*{
+  box-sizing:border-box;
+  font-family:Segoe UI, sans-serif;
+}
+
+body{
+  margin:0;
+  background:var(--bg);
+}
+
+.header{
+  padding:15px;
+  background:white;
+  border-bottom:1px solid #ddd;
+}
+
+.counters{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  margin-bottom:15px;
+}
+
+.counter{
+  background:white;
+  border-radius:10px;
+  padding:15px;
+  min-width:120px;
+  box-shadow:0 2px 4px rgba(0,0,0,.08);
+}
+
+.counter-value{
+  font-size:24px;
+  font-weight:bold;
+}
+
+.counter-label{
+  color:#666;
+}
+
+.filters{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+}
+
+.filters input,
+.filters select{
+  padding:8px;
+}
+
+.board{
+  display:flex;
+  gap:15px;
+  padding:15px;
+  height:calc(100vh - 180px);
+}
+
+.column{
+  flex:1;
+  background:#eef2f7;
+  border-radius:10px;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+}
+
+.column-header{
+  padding:12px;
+  color:white;
+  font-weight:bold;
+  text-align:center;
+}
+
+.todo .column-header{
+  background:var(--todo);
+}
+
+.doing .column-header{
+  background:var(--doing);
+}
+
+.done .column-header{
+  background:var(--done);
+}
+
+.cards{
+  flex:1;
+  overflow:auto;
+  padding:10px;
+}
+
+.card{
+  background:white;
+  border-radius:10px;
+  padding:12px;
+  margin-bottom:10px;
+  cursor:pointer;
+  box-shadow:0 2px 4px rgba(0,0,0,.08);
+}
+
+.card:hover{
+  transform:translateY(-2px);
+}
+
+.card.dragging{
+  opacity:.5;
+}
+
+.card-title{
+  font-weight:bold;
+  margin-bottom:8px;
+  color:#2c3e50;
+}
+
+.card-meta{
+  font-size:12px;
+  color:#666;
+  margin-bottom:3px;
+}
+
+.card-text{
+  margin-top:6px;
+  font-size:13px;
+  color:#333;
+}
+
+.late{
+  border-left:6px solid var(--late);
+}
+</style>
+</head>
+
+<body>
+
+<div class="header">
+
+  <div class="counters">
+
+    <div class="counter">
+      <div class="counter-value" id="totalCount">0</div>
+      <div class="counter-label">Total</div>
+    </div>
+
+    <div class="counter">
+      <div class="counter-value" id="todoCount">0</div>
+      <div class="counter-label">À faire</div>
+    </div>
+
+    <div class="counter">
+      <div class="counter-value" id="doingCount">0</div>
+      <div class="counter-label">En cours</div>
+    </div>
+
+    <div class="counter">
+      <div class="counter-value" id="doneCount">0</div>
+      <div class="counter-label">Terminé</div>
+    </div>
+
+    <div class="counter">
+      <div class="counter-value" id="lateCount">0</div>
+      <div class="counter-label">En retard</div>
+    </div>
+
+  </div>
+
+  <div class="filters">
+    <input
+      type="text"
+      id="search"
+      placeholder="Recherche..."
+    >
+
+    <select id="agentFilter">
+      <option value="">Tous les agents</option>
+    </select>
+
+    <select id="themeFilter">
+      <option value="">Toutes les thématiques</option>
+    </select>
+
+  </div>
+
+</div>
+
+<div class="board">
+
+  <div class="column todo" data-status="À faire">
+    <div class="column-header">
+      À faire
+    </div>
+    <div class="cards" id="todoColumn"></div>
+  </div>
+
+  <div class="column doing" data-status="En cours">
+    <div class="column-header">
+      En cours
+    </div>
+    <div class="cards" id="doingColumn"></div>
+  </div>
+
+  <div class="column done" data-status="Terminé">
+    <div class="column-header">
+      Terminé
+    </div>
+    <div class="cards" id="doneColumn"></div>
+  </div>
+
+</div>
+
+<script>
+
+const LATE_DAYS = 7;
+
+let records = [];
+
+function daysBetween(dateString){
+
+    if(!dateString) return 0;
+
+    const d = new Date(dateString);
+
+    return (Date.now()-d.getTime())/(1000*3600*24);
+}
+
+function isLate(r){
+
+    return (
+        r.Statut === "À faire" &&
+        daysBetween(r.Date) > LATE_DAYS
+    );
+}
+
+function fillFilters(data){
+
+    const agents=[
+      ...new Set(
+        data.map(r=>r.Agent).filter(Boolean)
+      )
+    ].sort();
+
+    const themes=[
+      ...new Set(
+        data.map(r=>r.Thematique).filter(Boolean)
+      )
+    ].sort();
+
+    document.getElementById("agentFilter").innerHTML=
+      '<option value="">Tous les agents</option>'+
+      agents.map(a=>`<option>${a}</option>`).join('');
+
+    document.getElementById("themeFilter").innerHTML=
+      '<option value="">Toutes les thématiques</option>'+
+      themes.map(t=>`<option>${t}</option>`).join('');
+}
+
+function currentData(){
+
+    const search=
+      document.getElementById("search")
+      .value
+      .toLowerCase();
+
+    const agent=
+      document.getElementById("agentFilter").value;
+
+    const theme=
+      document.getElementById("themeFilter").value;
+
+    return records.filter(r=>{
+
+        const text = JSON.stringify(r).toLowerCase();
+
+        return (
+          text.includes(search)
+          &&
+          (!agent || r.Agent===agent)
+          &&
+          (!theme || r.Thematique===theme)
+        );
+    });
+}
+
+function render(){
+
+    const data=currentData();
+
+    const todo=data.filter(r=>r.Statut==="À faire");
+    const doing=data.filter(r=>r.Statut==="En cours");
+    const done=data.filter(r=>r.Statut==="Terminé");
+    const late=data.filter(isLate);
+
+    document.getElementById("totalCount").textContent=data.length;
+    document.getElementById("todoCount").textContent=todo.length;
+    document.getElementById("doingCount").textContent=doing.length;
+    document.getElementById("doneCount").textContent=done.length;
+    document.getElementById("lateCount").textContent=late.length;
+
+    buildColumn("todoColumn",todo);
+    buildColumn("doingColumn",doing);
+    buildColumn("doneColumn",done);
+}
+
+function buildColumn(id,data){
+
+    const container=document.getElementById(id);
+
+    container.innerHTML="";
+
+    data.forEach(r=>{
+
+        const card=document.createElement("div");
+
+        card.className=
+          "card "+(isLate(r) ? "late" : "");
+
+        card.draggable=true;
+        card.dataset.id=r.id;
+
+        card.innerHTML=`
+            <div class="card-title">
+                ${r.Collectivite || ""}
+            </div>
+
+            <div class="card-meta">
+                📅 ${r.Date || ""}
+            </div>
+
+            <div class="card-meta">
+                👤 ${r.Demandeur || ""}
+            </div>
+
+            <div class="card-meta">
+                🏷 ${r.Thematique || ""}
+            </div>
+
+            <div class="card-meta">
+                📞 ${r.Modalite || ""}
+            </div>
+
+            <div class="card-meta">
+                👨‍💼 ${r.Agent || ""}
+            </div>
+
+            <div class="card-text">
+                ${(r.Demande || "")
+                  .substring(0,140)}
+            </div>
+        `;
+
+        card.addEventListener("click",()=>{
+
+            grist.setCursorPos({
+                tableId:null,
+                rowId:r.id
+            });
+        });
+
+        card.addEventListener("dragstart",e=>{
+
+            e.dataTransfer.setData("text",r.id);
+            card.classList.add("dragging");
+        });
+
+        card.addEventListener("dragend",()=>{
+            card.classList.remove("dragging");
+        });
+
+        container.appendChild(card);
+    });
+}
+
+document.querySelectorAll(".cards")
+.forEach(col=>{
+
+    col.addEventListener("dragover",e=>{
+        e.preventDefault();
+    });
+
+    col.addEventListener("drop",async e=>{
+
+        e.preventDefault();
+
+        const rowId=
+          Number(e.dataTransfer.getData("text"));
+
+        const status=
+          col.parentElement.dataset.status;
+
+        await grist.docApi.applyUserActions([
+          [
+            "UpdateRecord",
+            rowId,
+            {
+              Statut:status
+            }
+          ]
+        ]);
+    });
+
+});
+
+function reload(){
+
+    render();
+}
+
+document
+.getElementById("search")
+.addEventListener("input",reload);
+
+document
+.getElementById("agentFilter")
+.addEventListener("change",reload);
+
+document
+.getElementById("themeFilter")
+.addEventListener("change",reload);
+
+grist.ready({
+  requiredAccess:'full'
+});
+
+grist.onRecords(data=>{
+
+    records=data;
+
+    fillFilters(records);
+
+    render();
+});
+
+</script>
+
+</body>
+</html>
